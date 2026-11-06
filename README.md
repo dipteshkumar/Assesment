@@ -177,6 +177,104 @@ No jargon. No tool names in the first paragraph. Your audience cares about busin
 
 ---
 
+---
+
+## Deployment & Production Operations
+
+### Docker Build & Run (Task 4)
+
+A production-ready `Dockerfile` is provided for the Python FastAPI service. It builds from a pinned, minimal Debian-based base image (`python:3.11.8-slim-bookworm`), executes under an unprivileged user (`appuser` with UID `10001`), drops root privileges, and includes a built-in healthcheck probe.
+
+#### 1. Build the Docker Image
+
+```bash
+docker build -t vulntracker-api:latest .
+```
+
+#### 2. Run the Container
+
+Run the container as non-root, exposing port 8000:
+
+```bash
+docker run -d \
+  --name vulntracker-api \
+  -p 8000:8000 \
+  -e SECRET_KEY="production-secure-random-jwt-key-32-bytes" \
+  -e DATABASE_URL="sqlite:////tmp/vulntracker.db" \
+  vulntracker-api:latest
+```
+
+#### 3. Verify Health & Connectivity
+
+```bash
+# Verify container is running and healthy
+docker ps --filter "name=vulntracker-api"
+
+# Query health probe
+curl http://localhost:8000/health
+# Response: {"status":"ok","service":"vulntracker-api"}
+```
+
+#### 4. Stop and Clean Up Container
+
+```bash
+docker stop vulntracker-api && docker rm vulntracker-api
+```
+
+---
+
+### Kubernetes Helm Deployment (`helm/`)
+
+A production Helm chart is provided in `helm/vulntracker/` featuring:
+- **Secrets Management**: Dynamic secret injection via External Secrets Operator (`ClusterSecretStore` / HashiCorp Vault / AWS Secrets Manager) or existing Kubernetes Secrets. No cleartext secrets in manifests.
+- **Strict Ingress & Network Policies**: TLS termination, ingress class restriction, and fine-grained `NetworkPolicy` permitting ingress only from the ingress controller and restricting egress exclusively to cluster DNS and the notification service (`vulntracker-notify`).
+- **Security Context & Resource Constraints**: Containers enforce `runAsNonRoot: true`, `allowPrivilegeEscalation: false`, `readOnlyRootFilesystem: true` (with `/tmp` emptyDir), capability dropping (`capabilities.drop: [ALL]`), and defined CPU/memory requests and limits.
+
+#### Deploy with Helm:
+
+```bash
+# Deploy to dedicated namespace with security isolation
+helm upgrade --install vulntracker ./helm/vulntracker \
+  --namespace sec-ops \
+  --create-namespace \
+  --set ingress.hosts[0].host=vulntracker.internal.corp
+```
+
+---
+
+### Shared Report Link Feature (Task 1 & Task 3)
+
+The "Shared Report Link" capability allows security analysts to securely distribute scan findings to external stakeholders or auditors:
+
+1. **Generate Share Link**:
+   - `POST /scans/{scan_id}/share` (Authenticated via Bearer token)
+   - Verified ownership: Users can only share scans they own (mitigating IDOR/BOLA).
+   - Optional password: `{ "password": "AuditorPassword123!" }`
+   - Generated share token has 256 bits of entropy via `secrets.token_urlsafe(32)`.
+   - Passwords are salted and hashed using bcrypt before database storage.
+   - Automatically expires after **24 hours**.
+   - Returns `{ "share_url": "http://<host>/share/<token>" }` (dynamically derived from request host).
+
+2. **Access Shared Scan**:
+   - `GET /share/{token}` (Public endpoint)
+   - If password-protected: query parameter `?password=...` is validated in constant time via bcrypt.
+   - Returns full scan details (`ScanOut`) if valid and unexpired; returns 410 if expired or 401 if password missing/incorrect.
+
+---
+
+### Security Analysis Reports & Documentation
+
+- **Raw Security Reports**: Located in `reports/`:
+  - `sast.bandit.json` (Bandit Static Application Security Testing)
+  - `sca.pip-audit.json` (Pip-audit Software Composition Analysis)
+  - `container.trivy.json` (Trivy Container Image Scan)
+  - `iac.trivy.json` (Trivy Infrastructure-as-Code Configuration Scan)
+- **Security Findings Log**: Detailed evaluation of all detected vulnerabilities and manual review in [`docs/findings.md`](docs/findings.md).
+- **Remediation Plan**: Code fix justifications, residual risk analysis, and compensating controls in [`docs/remediation-plan.md`](docs/remediation-plan.md).
+- **Executive Summary**: 5-minute CISO briefing in [`docs/executive-summary.md`](docs/executive-summary.md).
+
+---
+
 ## Submission
 
 Push your completed solution to your own GitHub repository and share the URL with us. Your repository must contain:
