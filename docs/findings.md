@@ -115,3 +115,4 @@ The table below synthesises results across Static Application Security Testing (
 
 2. **Deferred Work & Compensating Controls**:
    - Documented in `docs/remediation-plan.md` for dependency upgrades, SSRF protection in Node.js notification dispatchers, and network segmentation.
+

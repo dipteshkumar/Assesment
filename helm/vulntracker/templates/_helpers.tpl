@@ -40,3 +40,4 @@ Selector labels
 app.kubernetes.io/name: {{ include "vulntracker.name" . }}
 app.kubernetes.io/instance: {{ .Release.Name }}
 {{- end }}
+

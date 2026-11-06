@@ -66,3 +66,4 @@ To progress VulnTracker from a hardened prototype to an enterprise-grade product
 4. **Sprint 4 — Automated Continuous Compliance & Penetration Testing**
    - Enforce automated security scanning gates in our CI/CD pipelines to fail builds if new high-severity coding flaws or dependency vulnerabilities are introduced.
    - Engage an independent third-party offensive security team to conduct a black-box penetration test prior to general customer availability.
+

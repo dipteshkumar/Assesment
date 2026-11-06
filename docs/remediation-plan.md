@@ -116,3 +116,4 @@ All remediations have been verified with automated regression and security tests
 - `test_search_scans_sqli_protection`: Injects SQL syntax breaking sequences (`' OR '1'='1`) to confirm parameterized query safety.
 - `test_jwt_none_algorithm_rejected`: Forges unsigned tokens with `{"alg": "none"}` and validates HTTP 401 rejection.
 - All 18 automated API test cases pass with green status.
+
