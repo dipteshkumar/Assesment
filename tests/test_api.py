@@ -1,5 +1,6 @@
 import os
 import sys
+from datetime import datetime, timedelta
 
 import pytest
 from fastapi.testclient import TestClient
@@ -8,6 +9,7 @@ from sqlalchemy.orm import sessionmaker
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "app"))
 
+import models  # noqa: E402
 from database import Base, get_db  # noqa: E402
 from main import app  # noqa: E402
 
@@ -148,3 +150,79 @@ def test_delete_scan():
 
     resp = client.delete(f"/scans/{scan_id}", headers=auth_headers(token))
     assert resp.status_code == 204
+
+
+def test_create_and_get_public_share_link():
+    token = register_and_login()
+    scan_id = client.post("/scans", json={
+        "title": "Public Scan Share",
+        "severity": "medium",
+        "affected_component": "api",
+    }, headers=auth_headers(token)).json()["id"]
+
+    resp = client.post(f"/scans/{scan_id}/share", json={}, headers=auth_headers(token))
+    assert resp.status_code == 200
+    assert "share_url" in resp.json()
+    share_url = resp.json()["share_url"]
+    share_token = share_url.split("/")[-1]
+
+    # Access anonymously without token or password
+    public_resp = client.get(f"/share/{share_token}")
+    assert public_resp.status_code == 200
+    assert public_resp.json()["id"] == scan_id
+    assert public_resp.json()["title"] == "Public Scan Share"
+
+
+def test_create_and_get_password_protected_share():
+    token = register_and_login()
+    scan_id = client.post("/scans", json={
+        "title": "Confidential Finding",
+        "severity": "critical",
+        "affected_component": "auth",
+    }, headers=auth_headers(token)).json()["id"]
+
+    resp = client.post(
+        f"/scans/{scan_id}/share",
+        json={"password": "SharePassword123!"},
+        headers=auth_headers(token),
+    )
+    assert resp.status_code == 200
+    share_url = resp.json()["share_url"]
+    share_token = share_url.split("/")[-1]
+
+    # Access without password
+    no_pw_resp = client.get(f"/share/{share_token}")
+    assert no_pw_resp.status_code == 401
+
+    # Access with wrong password
+    wrong_pw_resp = client.get(f"/share/{share_token}?password=WrongPassword")
+    assert wrong_pw_resp.status_code == 401
+
+    # Access with correct password
+    correct_pw_resp = client.get(f"/share/{share_token}?password=SharePassword123!")
+    assert correct_pw_resp.status_code == 200
+    assert correct_pw_resp.json()["title"] == "Confidential Finding"
+
+
+def test_get_shared_scan_expired():
+    token = register_and_login()
+    scan_id = client.post("/scans", json={
+        "title": "Expired Finding",
+        "severity": "low",
+        "affected_component": "misc",
+    }, headers=auth_headers(token)).json()["id"]
+
+    resp = client.post(f"/scans/{scan_id}/share", json={}, headers=auth_headers(token))
+    share_token = resp.json()["share_url"].split("/")[-1]
+
+    # Force expiration in DB
+    db = TestingSessionLocal()
+    try:
+        shared_link = db.query(models.SharedScanLink).filter(models.SharedScanLink.token == share_token).first()
+        shared_link.expires_at = datetime.utcnow() - timedelta(hours=1)
+        db.commit()
+    finally:
+        db.close()
+
+    expired_resp = client.get(f"/share/{share_token}")
+    assert expired_resp.status_code == 410

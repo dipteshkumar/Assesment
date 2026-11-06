@@ -35,3 +35,17 @@ class ScanResult(Base):
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 
     owner = relationship("User", back_populates="scans")
+    shared_links = relationship("SharedScanLink", back_populates="scan", cascade="all, delete-orphan")
+
+
+class SharedScanLink(Base):
+    __tablename__ = "shared_scan_links"
+
+    id = Column(Integer, primary_key=True, index=True)
+    token = Column(String(64), unique=True, index=True, nullable=False)
+    scan_id = Column(Integer, ForeignKey("scan_results.id"), nullable=False)
+    password = Column(String(200), nullable=True)
+    expires_at = Column(DateTime, nullable=False)
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+    scan = relationship("ScanResult", back_populates="shared_links")
