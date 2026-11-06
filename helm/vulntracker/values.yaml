@@ -1,0 +1,124 @@
+# Default values for vulntracker chart.
+# Production security defaults: non-root, restricted ingress, resource limits, secrets manager.
+
+replicaCount: 2
+
+image:
+  repository: vulntracker-api
+  pullPolicy: IfNotPresent
+  tag: "1.0.0"
+
+imagePullSecrets: []
+nameOverride: ""
+fullnameOverride: ""
+
+serviceAccount:
+  create: true
+  annotations: {}
+  name: ""
+
+podSecurityContext:
+  runAsNonRoot: true
+  runAsUser: 10001
+  runAsGroup: 10001
+  fsGroup: 10001
+  seccompProfile:
+    type: RuntimeDefault
+
+securityContext:
+  allowPrivilegeEscalation: false
+  readOnlyRootFilesystem: true
+  capabilities:
+    drop:
+      - ALL
+
+service:
+  type: ClusterIP
+  port: 8000
+
+ingress:
+  enabled: true
+  className: "nginx"
+  annotations:
+    kubernetes.io/ingress.class: nginx
+    nginx.ingress.kubernetes.io/ssl-redirect: "true"
+    nginx.ingress.kubernetes.io/proxy-body-size: "8m"
+  hosts:
+    - host: vulntracker.internal.local
+      paths:
+        - path: /
+          pathType: Prefix
+  tls:
+    - secretName: vulntracker-tls-secret
+      hosts:
+        - vulntracker.internal.local
+
+# External Secrets Operator (ESO) integration to fetch secrets securely
+# from AWS Secrets Manager / Vault / Azure Key Vault / GCP Secret Manager
+externalSecrets:
+  enabled: true
+  secretStoreRef:
+    name: vault-backend
+    kind: ClusterSecretStore
+  targetSecretName: vulntracker-app-secrets
+  data:
+    - secretKey: SECRET_KEY
+      remoteRef:
+        key: secret/vulntracker/app
+        property: secret_key
+    - secretKey: DB_PASSWORD
+      remoteRef:
+        key: secret/vulntracker/database
+        property: password
+    - secretKey: ADMIN_API_KEY
+      remoteRef:
+        key: secret/vulntracker/app
+        property: admin_api_key
+
+# Existing secret name if externalSecrets is not used
+existingSecret: ""
+
+env:
+  DATABASE_URL: "sqlite:////tmp/vulntracker.db"
+  ALGORITHM: "HS256"
+  ACCESS_TOKEN_EXPIRE_MINUTES: "30"
+  NOTIFY_SERVICE_URL: "http://vulntracker-notify:3001"
+
+resources:
+  limits:
+    cpu: 500m
+    memory: 512Mi
+  requests:
+    cpu: 100m
+    memory: 128Mi
+
+healthCheck:
+  livenessProbe:
+    httpGet:
+      path: /health
+      port: 8000
+    initialDelaySeconds: 15
+    periodSeconds: 20
+    timeoutSeconds: 5
+    failureThreshold: 3
+  readinessProbe:
+    httpGet:
+      path: /health
+      port: 8000
+    initialDelaySeconds: 5
+    periodSeconds: 10
+    timeoutSeconds: 3
+    failureThreshold: 2
+
+networkPolicy:
+  enabled: true
+  # Ingress restricted to ingress-controller namespace/pods
+  ingressControllerNamespace: "ingress-nginx"
+  # Egress restricted to notification service and cluster DNS
+  notifyServiceSelector:
+    app.kubernetes.io/name: vulntracker-notify
+  notifyPort: 3001
+
+nodeSelector: {}
+tolerations: []
+affinity: {}
