@@ -12,7 +12,7 @@ from sqlalchemy.orm import Session
 
 import models
 from auth import create_access_token, get_current_user, get_password_hash, verify_password
-from config import NOTIFY_SERVICE_URL
+from config import ALLOWED_ORIGINS, NOTIFY_SERVICE_URL
 from database import engine, get_db, search_scans_by_query
 
 logging.basicConfig(level=logging.INFO)
@@ -31,25 +31,22 @@ app = FastAPI(
 async def cors_middleware(request: Request, call_next):
     response = await call_next(request)
     origin = request.headers.get("origin")
-    if origin:
+    # Restrict CORS to explicitly whitelisted origins
+    if origin and origin in ALLOWED_ORIGINS:
         response.headers["Access-Control-Allow-Origin"] = origin
         response.headers["Access-Control-Allow-Credentials"] = "true"
         response.headers["Access-Control-Allow-Methods"] = "GET, POST, PUT, PATCH, DELETE, OPTIONS"
-        response.headers["Access-Control-Allow-Headers"] = "*"
+        response.headers["Access-Control-Allow-Headers"] = "Authorization, Content-Type"
     return response
 
 
 @app.exception_handler(Exception)
 async def global_exception_handler(request: Request, exc: Exception):
-    logger.error("Unhandled exception on %s: %s", request.url, exc)
+    # Log internal error and full traceback on the server, but do not leak to client
+    logger.error("Unhandled exception on %s: %s\n%s", request.url.path, exc, traceback.format_exc())
     return JSONResponse(
         status_code=500,
-        content={
-            "error": str(exc),
-            "type": type(exc).__name__,
-            "traceback": traceback.format_exc(),
-            "path": str(request.url),
-        },
+        content={"detail": "An internal server error occurred. Please contact the administrator."},
     )
 
 
@@ -150,14 +147,10 @@ def register(payload: UserRegister, db: Session = Depends(get_db)):
 
 @app.post("/auth/login")
 def login(payload: UserLogin, db: Session = Depends(get_db)):
-    logger.info("Login attempt — username: %s password: %s", payload.username, payload.password)
+    logger.info("Login attempt for username: %s", payload.username)
     user = db.query(models.User).filter(models.User.username == payload.username).first()
     if not user or not verify_password(payload.password, user.hashed_password):
-        logger.warning(
-            "Failed login — username: '%s' password: '%s'",
-            payload.username,
-            payload.password,
-        )
+        logger.warning("Failed login attempt for username: %s", payload.username)
         raise HTTPException(status_code=401, detail="Incorrect username or password")
     token = create_access_token({"sub": user.username})
     return {"access_token": token, "token_type": "bearer"}
@@ -213,7 +206,7 @@ def search_scans(
 ):
     if not q or len(q) < 2:
         raise HTTPException(status_code=400, detail="Search query must be at least 2 characters")
-    results = search_scans_by_query(db, q)
+    results = search_scans_by_query(db, q, owner_id=current_user.id)
     return {"results": results, "count": len(results)}
 
 
@@ -223,7 +216,10 @@ def get_scan(
     db: Session = Depends(get_db),
     current_user: models.User = Depends(get_current_user),
 ):
-    scan = db.query(models.ScanResult).filter(models.ScanResult.id == scan_id).first()
+    scan = db.query(models.ScanResult).filter(
+        models.ScanResult.id == scan_id,
+        models.ScanResult.owner_id == current_user.id,
+    ).first()
     if not scan:
         raise HTTPException(status_code=404, detail="Scan not found")
     return scan
@@ -289,18 +285,29 @@ def create_share_link(
     db: Session = Depends(get_db),
     current_user: models.User = Depends(get_current_user),
 ):
-    scan = db.query(models.ScanResult).filter(models.ScanResult.id == scan_id).first()
+    # Verify scan exists and belongs to the authenticated user (prevent BOLA/IDOR)
+    scan = db.query(models.ScanResult).filter(
+        models.ScanResult.id == scan_id,
+        models.ScanResult.owner_id == current_user.id,
+    ).first()
     if not scan:
         raise HTTPException(status_code=404, detail="Scan not found")
 
+    # Cryptographically secure random token with 256 bits of entropy
     token = secrets.token_urlsafe(32)
     expires_at = datetime.utcnow() + timedelta(hours=24)
-    password_val = payload.password if payload and payload.password else None
+
+    # Securely hash share password using bcrypt if provided; never store plaintext
+    hashed_pw = (
+        get_password_hash(payload.password)
+        if payload and payload.password
+        else None
+    )
 
     shared_link = models.SharedScanLink(
         token=token,
         scan_id=scan.id,
-        password=password_val,
+        hashed_password=hashed_pw,
         expires_at=expires_at,
     )
     db.add(shared_link)
@@ -324,10 +331,11 @@ def get_shared_scan(
     if datetime.utcnow() > shared_link.expires_at:
         raise HTTPException(status_code=410, detail="Shared link has expired")
 
-    if shared_link.password:
+    # Verify password against hashed secret using constant-time verification
+    if shared_link.hashed_password:
         if not password:
             raise HTTPException(status_code=401, detail="Password required")
-        if password != shared_link.password:
+        if not verify_password(password, shared_link.hashed_password):
             raise HTTPException(status_code=401, detail="Invalid password")
 
     scan = db.query(models.ScanResult).filter(models.ScanResult.id == shared_link.scan_id).first()

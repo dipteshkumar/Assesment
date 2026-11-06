@@ -11,6 +11,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "app"))
 
 import models  # noqa: E402
 from database import Base, get_db  # noqa: E402
+from jose import jwt  # noqa: E402
 from main import app  # noqa: E402
 
 TEST_DB_URL = "sqlite:///./test_vulntracker.db"
@@ -226,3 +227,87 @@ def test_get_shared_scan_expired():
 
     expired_resp = client.get(f"/share/{share_token}")
     assert expired_resp.status_code == 410
+
+
+def test_get_scan_unauthorized_bola():
+    alice_token = register_and_login("alice_owner", "alice_o@example.com", "pw123")
+    bob_token = register_and_login("bob_attacker", "bob_a@example.com", "pw123")
+
+    # Alice creates a scan
+    scan_id = client.post("/scans", json={
+        "title": "Alice Confidential Report",
+        "severity": "critical",
+        "affected_component": "payment gateway",
+    }, headers=auth_headers(alice_token)).json()["id"]
+
+    # Bob tries to access Alice's scan
+    resp = client.get(f"/scans/{scan_id}", headers=auth_headers(bob_token))
+    assert resp.status_code == 404
+
+
+def test_create_share_link_unauthorized_bola():
+    alice_token = register_and_login("alice_share", "alice_s@example.com", "pw123")
+    bob_token = register_and_login("bob_share", "bob_s@example.com", "pw123")
+
+    # Alice creates a scan
+    scan_id = client.post("/scans", json={
+        "title": "Alice Internal Audit",
+        "severity": "high",
+        "affected_component": "auth module",
+    }, headers=auth_headers(alice_token)).json()["id"]
+
+    # Bob tries to generate a share link for Alice's scan
+    resp = client.post(f"/scans/{scan_id}/share", json={}, headers=auth_headers(bob_token))
+    assert resp.status_code == 404
+
+
+def test_share_password_hashed_in_db():
+    token = register_and_login("carol", "carol@example.com", "pw123")
+    scan_id = client.post("/scans", json={
+        "title": "Hashed Password Test",
+        "severity": "medium",
+        "affected_component": "db",
+    }, headers=auth_headers(token)).json()["id"]
+
+    raw_password = "SuperSecretPassword123!"
+    resp = client.post(f"/scans/{scan_id}/share", json={"password": raw_password}, headers=auth_headers(token))
+    share_token = resp.json()["share_url"].split("/")[-1]
+
+    # Verify password is stored hashed in DB
+    db = TestingSessionLocal()
+    try:
+        shared_link = db.query(models.SharedScanLink).filter(models.SharedScanLink.token == share_token).first()
+        assert shared_link is not None
+        assert shared_link.hashed_password != raw_password
+        assert shared_link.hashed_password.startswith("$2b$") or shared_link.hashed_password.startswith("$2a$")
+    finally:
+        db.close()
+
+
+def test_search_scans_sqli_protection():
+    token = register_and_login("dave", "dave@example.com", "pw123")
+    client.post("/scans", json={
+        "title": "Normal Scan",
+        "severity": "low",
+        "affected_component": "frontend",
+    }, headers=auth_headers(token))
+
+    # Malicious SQL injection payload
+    sqli_payload = "' OR '1'='1"
+    resp = client.get(f"/scans/search?q={sqli_payload}", headers=auth_headers(token))
+    assert resp.status_code == 200
+    # Should safely return empty results, not dump all tables or throw SQL syntax errors
+    assert len(resp.json()["results"]) == 0
+
+
+def test_jwt_none_algorithm_rejected():
+    import base64
+    import json
+
+    # Construct an unsigned token with "alg": "none" (classic JWT none attack)
+    header = base64.urlsafe_b64encode(json.dumps({"alg": "none", "typ": "JWT"}).encode()).decode().rstrip("=")
+    payload = base64.urlsafe_b64encode(json.dumps({"sub": "admin"}).encode()).decode().rstrip("=")
+    forged_token = f"{header}.{payload}."
+
+    resp = client.get("/scans", headers=auth_headers(forged_token))
+    assert resp.status_code == 401

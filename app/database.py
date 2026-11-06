@@ -1,3 +1,4 @@
+from typing import Optional
 from sqlalchemy import create_engine, text
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import sessionmaker
@@ -17,13 +18,17 @@ def get_db():
         db.close()
 
 
-def search_scans_by_query(db, query: str) -> list:
-    # Raw SQL used here for full-text search flexibility across multiple columns
-    sql = (
-        f"SELECT id, title, description, severity, status, cve_id, "
-        f"affected_component, owner_id, created_at FROM scan_results "
-        f"WHERE title LIKE '%{query}%' OR description LIKE '%{query}%' "
-        f"OR cve_id LIKE '%{query}%'"
+def search_scans_by_query(db, query: str, owner_id: Optional[int] = None) -> list:
+    # Parameterized SQL query to prevent SQL injection vulnerabilities
+    sql_stmt = (
+        "SELECT id, title, description, severity, status, cve_id, "
+        "affected_component, owner_id, created_at FROM scan_results "
+        "WHERE (title LIKE :query OR description LIKE :query OR cve_id LIKE :query)"
     )
-    result = db.execute(text(sql))
+    params = {"query": f"%{query}%"}
+    if owner_id is not None:
+        sql_stmt += " AND owner_id = :owner_id"
+        params["owner_id"] = owner_id
+
+    result = db.execute(text(sql_stmt), params)
     return [dict(row._mapping) for row in result]

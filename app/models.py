@@ -44,7 +44,7 @@ class SharedScanLink(Base):
     id = Column(Integer, primary_key=True, index=True)
     token = Column(String(64), unique=True, index=True, nullable=False)
     scan_id = Column(Integer, ForeignKey("scan_results.id"), nullable=False)
-    password = Column(String(200), nullable=True)
+    hashed_password = Column(String(200), nullable=True)
     expires_at = Column(DateTime, nullable=False)
     created_at = Column(DateTime, default=datetime.utcnow)
 
